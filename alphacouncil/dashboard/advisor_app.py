@@ -496,7 +496,14 @@ def _sidebar():
         unsafe_allow_html=True,
     )
     st.sidebar.markdown("---")
-    st.sidebar.markdown(f"_Last updated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC")
+    st.sidebar.markdown(f"_Last updated: {datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC_")
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Clear Analysis Cache", use_container_width=True, key="clear_cache_btn"):
+        try:
+            _cache().clear_all()
+            st.sidebar.success("Cache cleared — next analysis will use fresh data.")
+        except Exception:
+            st.sidebar.warning("Could not clear cache.")
 
 # ===========================================================================
 # Tab 1: Stock Analyzer
@@ -547,6 +554,19 @@ def _tab_analyzer():
     if advisor is not None:
         with st.spinner(f"Analyzing {ticker} ..."):
             try:
+                # Invalidate stale cache for this ticker before fresh analysis
+                cache = _cache()
+                for prefix in [
+                    f"technical:{ticker}", f"fundamental:{ticker}",
+                    f"sentiment:{ticker}", f"prediction:{ticker}",
+                ]:
+                    cache.invalidate_prefix(prefix)
+                # Also invalidate .NS variant if bare ticker
+                if "." not in ticker:
+                    for sfx in [".NS", ".BO"]:
+                        for pfx in ["technical", "fundamental", "sentiment", "prediction"]:
+                            cache.invalidate_prefix(f"{pfx}:{ticker}{sfx}")
+
                 rec = run_async(advisor.analyze(ticker))
             except Exception as e:
                 st.error(f"Analysis failed: {e}")

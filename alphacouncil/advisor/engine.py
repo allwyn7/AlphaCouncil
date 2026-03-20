@@ -144,8 +144,19 @@ class InvestmentAdvisor:
         fund_score = self._score_fundamental(fund_verdict)
         sent_score = self._score_sentiment(sent_verdict)
 
-        # Weighted composite: technical 40%, fundamental 35%, sentiment 25%
-        composite = 0.40 * tech_score + 0.35 * fund_score + 0.25 * sent_score
+        # Detect whether sentiment is actually available or just a neutral stub
+        sentiment_available = (
+            sent_signal is not None
+            and sent_verdict.article_count > 0
+        )
+
+        # Weighted composite — reweight when sentiment is unavailable
+        if sentiment_available:
+            # Full weights: technical 40%, fundamental 35%, sentiment 25%
+            composite = 0.40 * tech_score + 0.35 * fund_score + 0.25 * sent_score
+        else:
+            # No sentiment data: redistribute to tech 53%, fundamental 47%
+            composite = 0.53 * tech_score + 0.47 * fund_score
 
         action = self._composite_to_action(composite)
         horizon = self._determine_horizon(tech_verdict, fund_verdict)
@@ -162,7 +173,7 @@ class InvestmentAdvisor:
         # Compute per-horizon buy ratings
         horizon_ratings = self._compute_horizon_ratings(
             tech_score, fund_score, sent_score, tech_verdict, fund_verdict,
-            levels, current_price,
+            levels, current_price, sentiment_available,
         )
 
         return StockRecommendation(
@@ -814,12 +825,16 @@ class InvestmentAdvisor:
         self, tech_score: float, fund_score: float, sent_score: float,
         tech: TechnicalVerdict, fund: FundamentalVerdict,
         levels: EntryExitLevels, price: float,
+        sentiment_available: bool = True,
     ) -> list[HorizonRating]:
         """Compute buy/sell ratings for short, mid, and long term."""
         ratings = []
 
-        # Short term: heavily weighted by technical (60%) + sentiment (30%) + fundamental (10%)
-        st_score = 0.60 * tech_score + 0.30 * sent_score + 0.10 * fund_score
+        # Short term: heavily weighted by technical + sentiment (if available)
+        if sentiment_available:
+            st_score = 0.60 * tech_score + 0.30 * sent_score + 0.10 * fund_score
+        else:
+            st_score = 0.85 * tech_score + 0.15 * fund_score
         st_action = self._composite_to_action(st_score)
         st_target = levels.target_short_term
         st_ret = ((st_target - price) / price * 100) if st_target and price > 0 else None
@@ -845,7 +860,11 @@ class InvestmentAdvisor:
         ))
 
         # Mid term: balanced (35% tech + 40% fundamental + 25% sentiment)
-        mt_score = 0.35 * tech_score + 0.40 * fund_score + 0.25 * sent_score
+        # Mid term: balanced (tech + fundamental + sentiment if available)
+        if sentiment_available:
+            mt_score = 0.35 * tech_score + 0.40 * fund_score + 0.25 * sent_score
+        else:
+            mt_score = 0.45 * tech_score + 0.55 * fund_score
         mt_action = self._composite_to_action(mt_score)
         mt_target = levels.target_mid_term
         mt_ret = ((mt_target - price) / price * 100) if mt_target and price > 0 else None
@@ -869,7 +888,11 @@ class InvestmentAdvisor:
         ))
 
         # Long term: heavily fundamental (60%) + sentiment trend (15%) + technical (25%)
-        lt_score = 0.25 * tech_score + 0.60 * fund_score + 0.15 * sent_score
+        # Long term: heavily fundamental (+ sentiment if available)
+        if sentiment_available:
+            lt_score = 0.25 * tech_score + 0.60 * fund_score + 0.15 * sent_score
+        else:
+            lt_score = 0.30 * tech_score + 0.70 * fund_score
         lt_action = self._composite_to_action(lt_score)
         lt_target = levels.target_long_term
         lt_ret = ((lt_target - price) / price * 100) if lt_target and price > 0 else None
