@@ -321,6 +321,65 @@ _CSS = """
 st.markdown(_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
+# Security: disable right-click, copy, view-source, dev tools, text selection
+# Hide Streamlit source code links, GitHub icon, deploy button, menu items
+# ---------------------------------------------------------------------------
+
+_SECURITY_CSS_JS = """
+<style>
+/* Hide Streamlit branding and source links */
+#MainMenu {visibility: hidden !important;}
+footer {visibility: hidden !important;}
+header {visibility: hidden !important;}
+.stDeployButton {display: none !important;}
+[data-testid="stToolbar"] {display: none !important;}
+[data-testid="stDecoration"] {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important;}
+button[title="View app source"] {display: none !important;}
+.viewerBadge_link__qRIco {display: none !important;}
+.styles_viewerBadge__CvC9N {display: none !important;}
+
+/* Disable text selection on the entire page */
+body, .main, .block-container {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+}
+/* But allow selection in input fields */
+input, textarea, [contenteditable="true"], .stTextInput input, .stSelectbox {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+}
+</style>
+
+<script>
+// Disable right-click context menu
+document.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+// Disable common keyboard shortcuts for viewing source / dev tools
+document.addEventListener('keydown', function(e) {
+    // Ctrl+U (view source)
+    if (e.ctrlKey && e.key === 'u') { e.preventDefault(); }
+    // Ctrl+S (save page)
+    if (e.ctrlKey && e.key === 's') { e.preventDefault(); }
+    // Ctrl+Shift+I (dev tools)
+    if (e.ctrlKey && e.shiftKey && e.key === 'I') { e.preventDefault(); }
+    // Ctrl+Shift+J (console)
+    if (e.ctrlKey && e.shiftKey && e.key === 'J') { e.preventDefault(); }
+    // Ctrl+Shift+C (inspect element)
+    if (e.ctrlKey && e.shiftKey && e.key === 'C') { e.preventDefault(); }
+    // F12 (dev tools)
+    if (e.key === 'F12') { e.preventDefault(); }
+});
+
+// Disable drag
+document.addEventListener('dragstart', function(e) { e.preventDefault(); });
+</script>
+"""
+st.markdown(_SECURITY_CSS_JS, unsafe_allow_html=True)
+
+# ---------------------------------------------------------------------------
 # Singletons
 # ---------------------------------------------------------------------------
 

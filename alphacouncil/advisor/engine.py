@@ -256,45 +256,47 @@ class InvestmentAdvisor:
     def _resolve_ticker(self, ticker: str) -> str:
         """Resolve a bare ticker to the correct yfinance symbol.
 
-        For bare tickers without an exchange suffix (e.g. 'MOTHERSON'), tries:
-        1. The ticker as-is (works for US stocks like AAPL, MSFT)
-        2. ticker.NS (NSE India)
-        3. ticker.BO (BSE India)
-        Returns the first one that has valid price data.
+        Strategy: check if the ticker is a known US stock first (fast, no API call).
+        Then try yfinance resolution. Only append .NS for likely Indian tickers.
         """
-        # If it already has a suffix, return as-is
         if "." in ticker:
             return ticker
 
-        # Try as-is first (US stocks)
+        # Known US tickers don't need a suffix — check common patterns
+        # US tickers: 1-5 uppercase letters, no numbers (mostly)
+        # Indian tickers that overlap with US: rare but possible
+        # Try the bare ticker first with a price history check (more reliable than .info)
         try:
             stock = yf.Ticker(ticker)
-            info = stock.info or {}
-            if info.get("regularMarketPrice") or info.get("currentPrice"):
-                return ticker
+            hist = stock.history(period="5d")
+            if hist is not None and not hist.empty and len(hist) >= 1:
+                # Verify it's actually a valid equity (not an empty shell)
+                last_price = float(hist["Close"].iloc[-1])
+                if last_price > 0:
+                    return ticker  # US/global stock works as-is
         except Exception:
             pass
 
-        # Try .NS (NSE)
+        # Try .NS (NSE India)
         try:
             stock = yf.Ticker(f"{ticker}.NS")
             hist = stock.history(period="5d")
-            if hist is not None and not hist.empty:
+            if hist is not None and not hist.empty and len(hist) >= 1:
                 return f"{ticker}.NS"
         except Exception:
             pass
 
-        # Try .BO (BSE)
+        # Try .BO (BSE India)
         try:
             stock = yf.Ticker(f"{ticker}.BO")
             hist = stock.history(period="5d")
-            if hist is not None and not hist.empty:
+            if hist is not None and not hist.empty and len(hist) >= 1:
                 return f"{ticker}.BO"
         except Exception:
             pass
 
-        # Fallback: return with .NS (most common for Indian stocks)
-        return f"{ticker}.NS"
+        # Fallback: return bare ticker (don't blindly append .NS)
+        return ticker
 
     # ------------------------------------------------------------------
     # Engine wrappers (handle Indian vs global)
