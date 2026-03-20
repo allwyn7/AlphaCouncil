@@ -500,7 +500,9 @@ def _sidebar():
     st.sidebar.markdown("---")
     if st.sidebar.button("Clear Analysis Cache", use_container_width=True, key="clear_cache_btn"):
         try:
-            _cache().clear_all()
+            c = _cache()
+            if hasattr(c, "clear_all"):
+                c.clear_all()
             st.sidebar.success("Cache cleared — next analysis will use fresh data.")
         except Exception:
             st.sidebar.warning("Could not clear cache.")
@@ -553,20 +555,23 @@ def _tab_analyzer():
 
     if advisor is not None:
         with st.spinner(f"Analyzing {ticker} ..."):
+            # Best-effort cache invalidation (won't crash if method missing)
             try:
-                # Invalidate stale cache for this ticker before fresh analysis
                 cache = _cache()
-                for prefix in [
-                    f"technical:{ticker}", f"fundamental:{ticker}",
-                    f"sentiment:{ticker}", f"prediction:{ticker}",
-                ]:
-                    cache.invalidate_prefix(prefix)
-                # Also invalidate .NS variant if bare ticker
-                if "." not in ticker:
-                    for sfx in [".NS", ".BO"]:
-                        for pfx in ["technical", "fundamental", "sentiment", "prediction"]:
-                            cache.invalidate_prefix(f"{pfx}:{ticker}{sfx}")
+                if hasattr(cache, "invalidate_prefix"):
+                    for prefix in [
+                        f"technical:{ticker}", f"fundamental:{ticker}",
+                        f"sentiment:{ticker}", f"prediction:{ticker}",
+                    ]:
+                        cache.invalidate_prefix(prefix)
+                    if "." not in ticker:
+                        for sfx in [".NS", ".BO"]:
+                            for pfx in ["technical", "fundamental", "sentiment", "prediction"]:
+                                cache.invalidate_prefix(f"{pfx}:{ticker}{sfx}")
+            except Exception:
+                pass  # cache clear is best-effort, never block analysis
 
+            try:
                 rec = run_async(advisor.analyze(ticker))
             except Exception as e:
                 st.error(f"Analysis failed: {e}")
