@@ -469,13 +469,16 @@ def _conviction_ring(value: int, size: int = 80) -> str:
     </svg>'''
 
 def _fetch_yf(ticker: str, period: str = "6mo"):
+    """Fetch OHLCV via yf.Ticker().history() — same method as the analysis engine."""
     try:
         import yfinance as yf
-        df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+        stock = yf.Ticker(ticker)
+        df = stock.history(period=period)
         if df is None or df.empty:
             return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+        # Normalise column names (history() returns Title-Case columns)
+        col_map = {c: c.title() for c in df.columns}
+        df.rename(columns=col_map, inplace=True)
         return df
     except Exception:
         return None
@@ -549,7 +552,9 @@ def _tab_analyzer():
                 st.error(f"Analysis failed: {e}")
                 return
 
-    price_df = _fetch_yf(ticker, "1y")
+    # Use the resolved ticker from the engine so chart data matches analysis
+    resolved_ticker = rec.ticker if rec is not None else ticker
+    price_df = _fetch_yf(resolved_ticker, "1y")
     if price_df is None or price_df.empty:
         st.warning(f"No price data for **{ticker}**.")
         return
@@ -557,13 +562,15 @@ def _tab_analyzer():
         if c in price_df.columns:
             price_df[c] = pd.to_numeric(price_df[c], errors="coerce")
 
-    current_price = float(price_df["Close"].iloc[-1])
-
     if rec is None:
+        current_price = float(price_df["Close"].iloc[-1])
         st.subheader(ticker)
         st.metric("Last Close", f"{current_price:,.2f}")
         _render_chart(price_df, ticker, None)
         return
+
+    # Use engine's current_price as the single source of truth
+    current_price = rec.current_price
 
     # --- Hero Header ---
     daily_chg = 0.0
@@ -580,7 +587,7 @@ def _tab_analyzer():
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;">
         <div>
           <p class="company-name">{rec.name or ticker}</p>
-          <p class="ticker">{ticker} &middot; {rec.exchange}</p>
+          <p class="ticker">{rec.ticker} &middot; {rec.exchange}</p>
         </div>
         <div style="text-align:right;">
           <div class="price-big">{_fmt_price(rec.current_price, rec.currency)}</div>
@@ -985,10 +992,13 @@ def _render_chart(df: pd.DataFrame, ticker: str, rec: StockRecommendation | None
     bb_upper = bb_mid + 2 * bb_std
     bb_lower = bb_mid - 2 * bb_std
 
+    # Wilder-smoothed RSI (matches pandas-ta / TechnicalEngine)
     delta = close.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-    rs = gain / loss.replace(0, float("nan"))
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1 / 14, min_periods=14).mean()
+    avg_loss = loss.ewm(alpha=1 / 14, min_periods=14).mean()
+    rs = avg_gain / avg_loss.replace(0, float("nan"))
     rsi = 100 - (100 / (1 + rs))
 
     ema12 = close.ewm(span=12, adjust=False).mean()
