@@ -474,7 +474,8 @@ def _tab_analyzer():
     analyze_btn = st.button("Analyze", type="primary", use_container_width=True, key="analyze_btn")
 
     if not analyze_btn or not ticker:
-        st.info("Search for a company above or enter a ticker, then click **Analyze**.")
+        st.info("Search for a company above, or type any ticker/company name directly. "
+                "Indian stocks work with or without the .NS suffix (e.g. MOTHERSON or MOTHERSON.NS).")
         return
 
     # --- Run analysis ---
@@ -660,6 +661,9 @@ def _tab_analyzer():
     st.markdown('<div class="section-title">Analysis Summary</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="reasoning-box">{rec.reasoning}</div>', unsafe_allow_html=True)
 
+    # --- Price Prediction ---
+    _render_price_prediction(ticker, rec, price_df)
+
     # --- Latest News ---
     st.markdown('<div class="section-title">Latest News</div>', unsafe_allow_html=True)
     _render_stock_news(ticker)
@@ -674,6 +678,136 @@ def _tab_analyzer():
         )
     except Exception:
         pass
+
+
+def _render_price_prediction(ticker: str, rec: StockRecommendation, price_df: pd.DataFrame) -> None:
+    """Show ensemble price predictions with confidence cone chart."""
+    st.markdown('<div class="section-title">Price Prediction</div>', unsafe_allow_html=True)
+
+    try:
+        from alphacouncil.advisor.predictor import PricePredictor
+        predictor = PricePredictor()
+        prediction = run_async(predictor.predict(ticker, df=price_df))
+    except Exception as e:
+        st.warning(f"Price prediction unavailable: {e}")
+        return
+
+    if not prediction or not prediction.predictions:
+        st.info("Not enough data to generate predictions.")
+        return
+
+    # --- Prediction summary cards ---
+    horizon_labels = {7: "1W", 14: "2W", 30: "1M", 60: "2M", 90: "3M"}
+    cols = st.columns(len(prediction.predictions))
+
+    for i, pt in enumerate(prediction.predictions):
+        label = horizon_labels.get(pt.days_ahead, f"{pt.days_ahead}D")
+        color = "var(--green)" if pt.change_pct >= 0 else "var(--red)"
+        sign = "+" if pt.change_pct >= 0 else ""
+        cur = rec.currency
+
+        with cols[i]:
+            st.markdown(f'''
+            <div class="horizon-card">
+              <div class="label">{label}</div>
+              <div style="font-size:1.4rem;font-weight:800;margin:6px 0;">{_fmt_price(pt.predicted_price, cur)}</div>
+              <div class="expected-return" style="color:{color};font-size:1rem;">{sign}{pt.change_pct:.1f}%</div>
+              <div class="target" style="font-size:0.75rem;">
+                {_fmt_price(pt.low_bound, cur)} — {_fmt_price(pt.high_bound, cur)}
+              </div>
+            </div>
+            ''', unsafe_allow_html=True)
+
+    # --- Confidence badge ---
+    conf = prediction.model_confidence
+    conf_color = "#00e676" if conf >= 0.7 else ("#ffa726" if conf >= 0.4 else "#ff5252")
+    st.markdown(
+        f'<div style="text-align:center;margin:12px 0;">'
+        f'<span style="background:{conf_color};color:#000;padding:4px 16px;border-radius:20px;'
+        f'font-weight:700;font-size:0.85rem;">Model Confidence: {conf:.0%}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+    # --- Prediction chart: historical + forecast cone ---
+    import plotly.graph_objects as _go
+    from plotly.subplots import make_subplots as _ms
+
+    close = price_df["Close"].astype(float)
+    fig = _ms(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+              row_heights=[0.75, 0.25])
+
+    # Historical candlestick (last 6 months)
+    fig.add_trace(_go.Candlestick(
+        x=price_df.index, open=price_df["Open"], high=price_df["High"],
+        low=price_df["Low"], close=price_df["Close"],
+        name="Price", increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+    ), row=1, col=1)
+
+    # Build forecast dates and values
+    last_date = price_df.index[-1]
+    forecast_dates = [last_date]
+    forecast_prices = [prediction.current_price]
+    forecast_low = [prediction.current_price]
+    forecast_high = [prediction.current_price]
+
+    for pt in prediction.predictions:
+        fwd_date = last_date + pd.Timedelta(days=pt.days_ahead)
+        forecast_dates.append(fwd_date)
+        forecast_prices.append(pt.predicted_price)
+        forecast_low.append(pt.low_bound)
+        forecast_high.append(pt.high_bound)
+
+    # Confidence cone (shaded area)
+    fig.add_trace(_go.Scatter(
+        x=forecast_dates, y=forecast_high, mode="lines",
+        line=dict(width=0), showlegend=False, hoverinfo="skip",
+    ), row=1, col=1)
+    fig.add_trace(_go.Scatter(
+        x=forecast_dates, y=forecast_low, mode="lines",
+        line=dict(width=0), fill="tonexty",
+        fillcolor="rgba(0,212,255,0.12)", name="Confidence Cone",
+    ), row=1, col=1)
+
+    # Forecast line (dashed)
+    fig.add_trace(_go.Scatter(
+        x=forecast_dates, y=forecast_prices, mode="lines+markers",
+        line=dict(color="#00d4ff", width=2.5, dash="dash"),
+        marker=dict(size=8, color="#00d4ff", symbol="circle"),
+        name="Prediction",
+    ), row=1, col=1)
+
+    # Volume bars (historical only)
+    vol_colors = [
+        "#26a69a" if price_df["Close"].iloc[i] >= price_df["Open"].iloc[i] else "#ef5350"
+        for i in range(len(price_df))
+    ]
+    fig.add_trace(_go.Bar(
+        x=price_df.index, y=price_df["Volume"], name="Volume", marker_color=vol_colors,
+    ), row=2, col=1)
+
+    fig.update_layout(
+        template="plotly_dark", height=600,
+        xaxis_rangeslider_visible=False, showlegend=True,
+        legend=dict(orientation="h", y=1.02, x=0.5, xanchor="center"),
+        margin=dict(t=30, b=30, l=50, r=30),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_yaxes(title_text="Price", row=1, col=1, gridcolor="rgba(255,255,255,0.04)")
+    fig.update_yaxes(title_text="Vol", row=2, col=1, gridcolor="rgba(255,255,255,0.04)")
+    for r in [1, 2]:
+        fig.update_xaxes(gridcolor="rgba(255,255,255,0.04)", row=r, col=1)
+
+    st.plotly_chart(fig, width="stretch")
+
+    # --- Disclaimer ---
+    st.markdown(
+        '<div class="glass-card" style="font-size:0.8rem;color:var(--text-secondary);padding:16px;">'
+        'Predictions are based on an ensemble of statistical models '
+        '(linear regression, exponential smoothing, and technical projection). '
+        'These are probabilistic estimates, not guarantees. Past performance does not '
+        'predict future results. Always do your own research.</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _render_stock_news(ticker: str) -> None:

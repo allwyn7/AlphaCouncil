@@ -32,6 +32,7 @@ import pandas as pd
 import structlog
 
 from alphacouncil.agents.base import BaseAgent
+from alphacouncil.agents.news_shock import NewsShockDetector, NewsShock
 from alphacouncil.core.models import (
     Action,
     AgentSignal,
@@ -219,6 +220,72 @@ class MetaAgent:
 
         if not signals_by_ticker:
             self._log.info("council.no_signals")
+            return []
+
+        # 1b. News shock filter ------------------------------------------
+        shock_detector = NewsShockDetector()
+        sentiment_data = market_data.get("sentiment", {})
+        sentiment_signals_data = market_data.get("sentiment_signals", {})
+
+        for ticker, sigs in list(signals_by_ticker.items()):
+            ticker_sent = sentiment_data.get(ticker, {})
+            ticker_sent_signals = sentiment_signals_data.get(ticker, {})
+            shock = shock_detector.detect_shock(ticker, ticker_sent_signals, ticker_sent)
+
+            if not shock.is_shock:
+                continue
+
+            filtered_sigs: list[AgentSignal] = []
+            for sig in sigs:
+                new_conviction = sig.conviction
+                new_action = sig.action
+                new_reasoning = sig.reasoning
+
+                if shock.severity > 0.8:
+                    # Extreme shock: override to HOLD
+                    new_action = Action.HOLD
+                    new_conviction = max(int(sig.conviction * 0.2), 0)
+                    new_reasoning = f"[NEWS SHOCK OVERRIDE severity={shock.severity:.2f}] {sig.reasoning}"
+                    self._log.warning(
+                        "council.news_shock_override",
+                        ticker=ticker,
+                        agent=sig.agent_name,
+                        severity=shock.severity,
+                    )
+                elif shock.direction == "negative" and sig.action == Action.BUY:
+                    dampening = shock.severity * 0.70
+                    new_conviction = max(int(sig.conviction * (1 - dampening)), 0)
+                    new_reasoning = f"[NEWS SHOCK DAMPENED -{dampening:.0%}] {sig.reasoning}"
+                elif shock.direction == "positive" and sig.action == Action.SELL:
+                    dampening = shock.severity * 0.50
+                    new_conviction = max(int(sig.conviction * (1 - dampening)), 0)
+                    new_reasoning = f"[NEWS SHOCK DAMPENED -{dampening:.0%}] {sig.reasoning}"
+
+                if new_action == Action.HOLD and new_conviction < _MIN_CONVICTION:
+                    continue  # drop the signal entirely
+
+                # Rebuild signal with adjusted values (frozen model, so recreate)
+                filtered_sigs.append(AgentSignal(
+                    ticker=sig.ticker,
+                    action=new_action,
+                    conviction=new_conviction,
+                    target_weight=sig.target_weight,
+                    stop_loss=sig.stop_loss,
+                    take_profit=sig.take_profit,
+                    factor_scores=sig.factor_scores,
+                    reasoning=new_reasoning,
+                    holding_period_days=sig.holding_period_days,
+                    agent_name=sig.agent_name,
+                    timestamp=sig.timestamp,
+                ))
+
+            if filtered_sigs:
+                signals_by_ticker[ticker] = filtered_sigs
+            else:
+                del signals_by_ticker[ticker]
+
+        if not signals_by_ticker:
+            self._log.info("council.all_signals_filtered_by_news_shock")
             return []
 
         # 2. Agreement scores -----------------------------------------------

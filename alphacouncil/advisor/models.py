@@ -240,3 +240,29 @@ class MarketOverview(BaseModel, frozen=True):
     global_summary: str = ""
     risk_outlook: str = "NEUTRAL"
     timestamp: datetime = Field(default_factory=lambda: datetime.now())
+
+
+# ---------------------------------------------------------------------------
+# Price prediction models
+# ---------------------------------------------------------------------------
+
+
+class PredictionPoint(BaseModel, frozen=True):
+    """Single price prediction for a specific future horizon."""
+    days_ahead: int
+    predicted_price: float
+    low_bound: float
+    high_bound: float
+    change_pct: float = Field(..., description="Expected % change from current price")
+
+
+class PricePrediction(BaseModel, frozen=True):
+    """Ensemble price prediction for a ticker across multiple horizons."""
+    model_config = {"protected_namespaces": ()}
+
+    ticker: str
+    current_price: float
+    predictions: list[PredictionPoint]
+    model_confidence: float = Field(..., ge=0.0, le=1.0)
+    methodology: str = "Ensemble of linear regression, exponential smoothing, and technical projection"
+    timestamp: datetime = Field(default_factory=lambda: datetime.now())

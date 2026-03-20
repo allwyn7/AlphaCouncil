@@ -326,9 +326,12 @@ class MeanReversionAgent(BaseAgent):
         Expected ``market_data`` keys:
             - ``"prices"``: ``dict[str, pd.DataFrame]`` -- OHLCV per ticker.
             - ``"fundamentals"``: ``dict[str, dict]`` -- yfinance ``info`` dicts.
+            - ``"sentiment"``: ``dict[str, dict]`` -- per-ticker sentiment
+              with ``sentiment_7d`` and ``sentiment_30d``.
         """
         prices: dict[str, pd.DataFrame] = market_data.get("prices", {})
         fundamentals: dict[str, Any] = market_data.get("fundamentals", {})
+        sentiment: dict[str, Any] = market_data.get("sentiment", {})
 
         weights = self._parameters["factor_weights"]
         min_rev = self._parameters["min_revenue_growth"]
@@ -415,6 +418,17 @@ class MeanReversionAgent(BaseAgent):
             # Determine action.
             action: Action
             if score < buy_z and growth_passes:
+                # Check sentiment before buying oversold stocks
+                ticker_sent = sentiment.get(ticker, {})
+                sent_7d = float(ticker_sent.get("sentiment_7d", 0.0))
+                if sent_7d < -0.3:
+                    logger.info(
+                        "skipping_news_driven_dip",
+                        ticker=ticker,
+                        sentiment_7d=sent_7d,
+                        z_score=score,
+                    )
+                    continue  # Skip this ticker entirely
                 action = Action.BUY
             elif score > overbought_z or (score >= sell_z and score > buy_z):
                 # Take profit when z returns to 0, or sell if overbought.

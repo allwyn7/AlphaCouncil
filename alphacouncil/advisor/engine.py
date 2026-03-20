@@ -88,7 +88,16 @@ class InvestmentAdvisor:
         ticker:
             Any yfinance-compatible ticker. Indian stocks should have .NS suffix.
             US stocks use plain symbols (AAPL, MSFT). European stocks use exchange suffix (.L, .SW).
+            Bare Indian tickers (e.g. MOTHERSON) are auto-resolved to .NS.
         """
+        # Auto-resolve bare tickers: if no dot and not a known US ticker, try .NS
+        ticker = ticker.strip().upper()
+        if "." not in ticker:
+            resolved = await asyncio.to_thread(self._resolve_ticker, ticker)
+            if resolved != ticker:
+                logger.info("ticker_resolved", original=ticker, resolved=resolved)
+            ticker = resolved
+
         logger.info("analyzing_stock", ticker=ticker)
         now = datetime.now(timezone.utc)
 
@@ -196,7 +205,8 @@ class InvestmentAdvisor:
     # ------------------------------------------------------------------
 
     def _fetch_ohlcv(self, ticker: str, period: str = "1y") -> Optional[pd.DataFrame]:
-        """Fetch OHLCV data via yfinance."""
+        """Fetch OHLCV data via yfinance. Auto-resolves bare Indian tickers."""
+        # Try the ticker as-is first
         try:
             stock = yf.Ticker(ticker)
             df = stock.history(period=period)
@@ -204,15 +214,87 @@ class InvestmentAdvisor:
                 return df
         except Exception as e:
             logger.warning("ohlcv_fetch_failed", ticker=ticker, error=str(e))
+
+        # If bare ticker (no exchange suffix) fails, try .NS (NSE India)
+        if "." not in ticker:
+            ns_ticker = f"{ticker}.NS"
+            try:
+                stock = yf.Ticker(ns_ticker)
+                df = stock.history(period=period)
+                if df is not None and not df.empty:
+                    logger.info("resolved_to_ns", original=ticker, resolved=ns_ticker)
+                    return df
+            except Exception:
+                pass
+
         return None
 
     def _fetch_info(self, ticker: str) -> dict:
-        """Fetch stock info via yfinance."""
+        """Fetch stock info via yfinance. Auto-resolves bare tickers to .NS."""
         try:
             stock = yf.Ticker(ticker)
-            return stock.info or {}
+            info = stock.info or {}
+            if info.get("regularMarketPrice") or info.get("currentPrice"):
+                return info
         except Exception:
-            return {}
+            pass
+
+        # Try .NS if bare ticker returned nothing useful
+        if "." not in ticker:
+            try:
+                stock = yf.Ticker(f"{ticker}.NS")
+                return stock.info or {}
+            except Exception:
+                pass
+
+        return {}
+
+    # ------------------------------------------------------------------
+    # Ticker resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_ticker(self, ticker: str) -> str:
+        """Resolve a bare ticker to the correct yfinance symbol.
+
+        For bare tickers without an exchange suffix (e.g. 'MOTHERSON'), tries:
+        1. The ticker as-is (works for US stocks like AAPL, MSFT)
+        2. ticker.NS (NSE India)
+        3. ticker.BO (BSE India)
+        Returns the first one that has valid price data.
+        """
+        # If it already has a suffix, return as-is
+        if "." in ticker:
+            return ticker
+
+        # Try as-is first (US stocks)
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info or {}
+            if info.get("regularMarketPrice") or info.get("currentPrice"):
+                return ticker
+        except Exception:
+            pass
+
+        # Try .NS (NSE)
+        try:
+            stock = yf.Ticker(f"{ticker}.NS")
+            hist = stock.history(period="5d")
+            if hist is not None and not hist.empty:
+                return f"{ticker}.NS"
+        except Exception:
+            pass
+
+        # Try .BO (BSE)
+        try:
+            stock = yf.Ticker(f"{ticker}.BO")
+            hist = stock.history(period="5d")
+            if hist is not None and not hist.empty:
+                return f"{ticker}.BO"
+        except Exception:
+            pass
+
+        # Fallback: return with .NS (most common for Indian stocks)
+        return f"{ticker}.NS"
 
     # ------------------------------------------------------------------
     # Engine wrappers (handle Indian vs global)

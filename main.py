@@ -371,14 +371,55 @@ async def _sentiment_crawler_task(
     cfg: Any,
     shutdown: asyncio.Event,
 ) -> None:
-    """Poll RSS + Reddit every 5 minutes for sentiment data."""
-    interval = cfg.SENTIMENT_TTL  # 900s = 15 min (use sentiment TTL)
+    """Poll RSS feeds every 5 minutes, score headlines via FinBERT, publish per-ticker sentiment."""
+    interval = cfg.SENTIMENT_TTL  # 900s = 15 min
     while not shutdown.is_set():
         try:
-            # Placeholder: in production this calls the sentiment analysis module
+            # Try to use the SentimentEngine for real analysis
+            per_ticker: dict[str, dict] = {}
+            try:
+                from alphacouncil.analysis.sentiment import SentimentEngine
+                cache = TieredCache()
+                engine = SentimentEngine(cache)
+                headlines = await engine.fetch_headlines()
+
+                if headlines:
+                    # Score all headlines
+                    titles = [h.get("title", "") for h in headlines if h.get("title")]
+                    if titles:
+                        scores = await engine.analyze_batch(titles[:64])  # batch limit
+
+                        # Map headlines to tickers
+                        for i, headline in enumerate(headlines[:len(scores)]):
+                            for ticker in cfg.DEFAULT_UNIVERSE:
+                                mapped = engine.map_ticker(headline.get("title", ""), [ticker])
+                                if mapped:
+                                    score = scores[i] if i < len(scores) else 0.0
+                                    if ticker not in per_ticker:
+                                        per_ticker[ticker] = {
+                                            "score": 0.0, "count": 0,
+                                            "article_count": 0,
+                                            "avg_article_count_30d": 5.0,
+                                            "sentiment_7d": 0.0,
+                                            "sentiment_30d": 0.0,
+                                        }
+                                    entry = per_ticker[ticker]
+                                    entry["count"] += 1
+                                    entry["article_count"] += 1
+                                    entry["score"] = (
+                                        (entry["score"] * (entry["count"] - 1) + score) / entry["count"]
+                                    )
+                                    entry["sentiment_7d"] = entry["score"]
+                                    entry["sentiment_30d"] = entry["score"] * 0.7
+
+            except ImportError:
+                pass  # SentimentEngine not available
+            except Exception as exc:
+                print(f"  [WARN] SentimentCrawler analysis error: {exc}")
+
             await bus.publish(
                 "sentiment",
-                {"source": "crawler", "status": "poll_complete"},
+                {"source": "crawler", "status": "poll_complete", "per_ticker": per_ticker},
                 publisher="sentiment_crawler",
             )
         except Exception as exc:
@@ -420,11 +461,29 @@ async def _agent_task(
     shutdown: asyncio.Event,
 ) -> None:
     """Run a single agent's signal-generation loop."""
-    queue = bus.subscribe("price_update")
+    price_queue = bus.subscribe("price_update")
+    sentiment_queue = bus.subscribe("sentiment")
+
+    latest_sentiment: dict[str, Any] = {}
+
     while not shutdown.is_set():
         try:
-            envelope = await asyncio.wait_for(queue.get(), timeout=5.0)
-            market_data = {"prices": envelope.payload}
+            # Check for sentiment updates (non-blocking)
+            try:
+                sent_envelope = await asyncio.wait_for(sentiment_queue.get(), timeout=0.1)
+                payload = sent_envelope.payload
+                if isinstance(payload, dict) and "per_ticker" in payload:
+                    latest_sentiment = payload["per_ticker"]
+            except asyncio.TimeoutError:
+                pass
+
+            # Wait for price update
+            envelope = await asyncio.wait_for(price_queue.get(), timeout=5.0)
+            market_data = {
+                "prices": envelope.payload,
+                "sentiment": latest_sentiment,
+                "sentiment_signals": latest_sentiment,
+            }
             signals = await agent.generate_signals(cfg.DEFAULT_UNIVERSE, market_data)
             for sig in signals:
                 await bus.publish("signal", sig, publisher=agent.name)
@@ -432,7 +491,8 @@ async def _agent_task(
             continue
         except Exception as exc:
             print(f"  [WARN] Agent {agent.name} error: {exc}")
-    bus.unsubscribe("price_update", queue)
+    bus.unsubscribe("price_update", price_queue)
+    bus.unsubscribe("sentiment", sentiment_queue)
 
 
 async def _meta_agent_task(

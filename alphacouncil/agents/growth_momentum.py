@@ -42,10 +42,10 @@ logger = structlog.get_logger(__name__)
 _DEFAULT_FACTOR_WEIGHTS: dict[str, float] = {
     "revenue_growth_yoy": 0.25,
     "revenue_acceleration": 0.15,
-    "price_momentum_6m": 0.20,
+    "price_momentum_6m": 0.15,      # was 0.20, reduced by 0.05
     "eps_growth_yoy": 0.15,
     "relative_strength_nifty": 0.10,
-    "sentiment_momentum": 0.10,
+    "sentiment_momentum": 0.15,     # was 0.10, increased by 0.05
     "volume_trend": 0.05,
 }
 
@@ -393,6 +393,20 @@ class GrowthMomentumAgent(BaseAgent):
                 action = Action.SELL
             else:
                 action = Action.HOLD
+
+            # --- Sentiment hard override ---
+            ticker_sent = sentiment.get(ticker, {})
+            sent_7d = float(ticker_sent.get("sentiment_7d", 0.0))
+            sent_30d = float(ticker_sent.get("sentiment_30d", 0.0))
+            sent_momentum_raw = sent_7d - sent_30d
+            if sent_7d < -0.5 and sent_momentum_raw < -0.3:
+                action = Action.SELL
+                logger.warning(
+                    "sentiment_hard_override",
+                    ticker=ticker,
+                    sentiment_7d=sent_7d,
+                    sentiment_momentum=sent_momentum_raw,
+                )
 
             # Only emit BUY / SELL signals (HOLD is implicit).
             if action == Action.HOLD:
