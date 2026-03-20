@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  alphacouncil:
+    build: .
+    container_name: alphacouncil
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8501:8501"
+    command: paper-trade
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    container_name: alphacouncil-dashboard
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8502:8501"
+    command: dashboard
+    restart: unless-stopped
